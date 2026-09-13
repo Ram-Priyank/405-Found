@@ -10,7 +10,6 @@ import {
   Tooltip, ResponsiveContainer, Legend, ReferenceLine
 } from 'recharts';
 
-const API_BASE = 'http://localhost:3001/api';
 
 // ──────────────────────────────────────────────────────────────────
 
@@ -52,12 +51,31 @@ const CustomTooltip = ({ active, payload, label }) => {
         );
       })}
 
-      {isForecast && (
-        <div style={{ marginTop: 12, paddingTop: 8, borderTop: '1px solid rgba(239, 68, 68, 0.3)', display: 'flex', justifyContent: 'space-between' }}>
-          <span className="telem-sm" style={{ color: 'var(--error)' }}>OVER-GEN RISK:</span>
-          <span className="telem-sm" style={{ color: 'var(--error)', fontWeight: 700 }}>HIGH</span>
+      {payload[0]?.payload?.solar_expected !== undefined && (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(132,149,136,0.3)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+            <span style={{ color: 'var(--primary)', fontFamily: 'JetBrains Mono, monospace', fontSize: 11 }}>Solar Expected</span>
+            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: 'var(--on-surface)' }}>{payload[0].payload.solar_expected.toFixed(1)} MW</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ color: 'var(--secondary)', fontFamily: 'JetBrains Mono, monospace', fontSize: 11 }}>Wind Expected</span>
+            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: 'var(--on-surface)' }}>{payload[0].payload.wind_expected.toFixed(1)} MW</span>
+          </div>
         </div>
       )}
+      {isForecast && (() => {
+        const f = payload.find(p => p.dataKey === 'forecast')?.value || 0;
+        const d = payload.find(p => p.dataKey === 'demand')?.value || 1;
+        const risk = f > d * 1.5 ? "HIGH" : (f > d * 1.2 ? "MODERATE" : "LOW");
+        const riskColor = risk === "HIGH" ? "var(--error)" : (risk === "MODERATE" ? "var(--tertiary)" : "var(--primary-action)");
+        
+        return (
+          <div style={{ marginTop: 12, paddingTop: 8, borderTop: `1px solid ${riskColor}`, display: 'flex', justifyContent: 'space-between', opacity: 0.8 }}>
+            <span className="telem-sm" style={{ color: riskColor }}>OVER-GEN RISK:</span>
+            <span className="telem-sm" style={{ color: riskColor, fontWeight: 700 }}>{risk}</span>
+          </div>
+        );
+      })()}
     </div>
   );
 };
@@ -149,7 +167,8 @@ export default function Dashboard({ userRole, coords }) {
   // Live KPI Math
   const liveRenewable = liveData ? (liveData.solar + liveData.wind) : 0;
   const liveDemand = liveData ? liveData.demand : 1;
-  const utilPct = Math.min(100, (liveDemand / (liveRenewable || 1)) * 100);
+  // Calculate what percentage of the grid's demand is being met by renewables
+  const utilPct = Math.min(100, (liveRenewable / (liveDemand || 1)) * 100);
   const gridDep = liveRenewable < liveDemand ? ((liveDemand - liveRenewable) / liveDemand) * 100 : 0;
   const risk = liveRenewable > liveDemand * 1.5 ? "HIGH" : (liveRenewable > liveDemand * 1.2 ? "MODERATE" : "LOW");
 
@@ -264,6 +283,7 @@ export default function Dashboard({ userRole, coords }) {
               />
 
               <YAxis
+                yAxisId="left"
                 axisLine={false} tickLine={false}
                 tick={{ fill: 'var(--on-surface-var)', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}
                 tickFormatter={v => `${v}`}
@@ -278,6 +298,7 @@ export default function Dashboard({ userRole, coords }) {
                   Since Recharts Area supports an array of [min, max] for dataKey in newer versions, we'll map the data. */}
 
               <Area
+                yAxisId="left"
                 type="monotone"
                 dataKey={(d) => [d.p10, d.p90]}
                 stroke="none"
@@ -288,6 +309,7 @@ export default function Dashboard({ userRole, coords }) {
 
               {/* Demand Line */}
               <Line
+                yAxisId="left"
                 type="monotone"
                 dataKey="demand"
                 stroke="var(--error)"
@@ -299,6 +321,7 @@ export default function Dashboard({ userRole, coords }) {
 
               {/* Forecast Line */}
               <Line
+                yAxisId="left"
                 type="monotone"
                 dataKey="forecast"
                 stroke="var(--secondary)"
@@ -311,6 +334,7 @@ export default function Dashboard({ userRole, coords }) {
 
               {/* Actual Line */}
               <Line
+                yAxisId="left"
                 type="monotone"
                 dataKey="actual"
                 stroke="var(--primary-action)"
@@ -351,19 +375,27 @@ export default function Dashboard({ userRole, coords }) {
             <thead style={{ position: 'sticky', top: 0, background: 'var(--surface-1)', zIndex: 1 }}>
               <tr>
                 <th style={{ textAlign: 'left', padding: '12px 16px', color: 'var(--on-surface-var)', fontWeight: 500, fontSize: 12, borderBottom: '1px solid var(--outline-var)' }}>TIME</th>
-                <th style={{ textAlign: 'right', padding: '12px 16px', color: 'var(--on-surface-var)', fontWeight: 500, fontSize: 12, borderBottom: '1px solid var(--outline-var)' }}>PREDICTED (MW)</th>
-                <th style={{ textAlign: 'right', padding: '12px 16px', color: 'var(--on-surface-var)', fontWeight: 500, fontSize: 12, borderBottom: '1px solid var(--outline-var)' }}>P10 (LOW)</th>
-                <th style={{ textAlign: 'right', padding: '12px 16px', color: 'var(--on-surface-var)', fontWeight: 500, fontSize: 12, borderBottom: '1px solid var(--outline-var)' }}>P90 (HIGH)</th>
+                <th style={{ textAlign: 'right', padding: '12px 16px', color: 'var(--on-surface-var)', fontWeight: 500, fontSize: 12, borderBottom: '1px solid var(--outline-var)' }}>PREDICTED TOTAL</th>
+                <th style={{ textAlign: 'right', padding: '12px 16px', color: 'var(--on-surface-var)', fontWeight: 500, fontSize: 12, borderBottom: '1px solid var(--outline-var)' }}>SOLAR</th>
+                <th style={{ textAlign: 'right', padding: '12px 16px', color: 'var(--on-surface-var)', fontWeight: 500, fontSize: 12, borderBottom: '1px solid var(--outline-var)' }}>WIND</th>
+                <th style={{ textAlign: 'right', padding: '12px 16px', color: 'var(--on-surface-var)', fontWeight: 500, fontSize: 12, borderBottom: '1px solid var(--outline-var)' }}>P10 BND</th>
+                <th style={{ textAlign: 'right', padding: '12px 16px', color: 'var(--on-surface-var)', fontWeight: 500, fontSize: 12, borderBottom: '1px solid var(--outline-var)' }}>P90 BND</th>
               </tr>
             </thead>
             <tbody>
-              {data.map((row, i) => (
+              {next24h.map((row, i) => (
                 <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                   <td style={{ padding: '12px 16px', fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: 'var(--on-surface)' }}>
                     {new Date(row.timestamp).toString() !== 'Invalid Date' ? new Date(row.timestamp).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : row.timestamp}
                   </td>
-                  <td style={{ textAlign: 'right', padding: '12px 16px', fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: 'var(--secondary)' }}>
+                  <td style={{ textAlign: 'right', padding: '12px 16px', fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: 'var(--primary-action)' }}>
                     {row.forecast ? row.forecast.toFixed(1) : '-'}
+                  </td>
+                  <td style={{ textAlign: 'right', padding: '12px 16px', fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: 'var(--primary)' }}>
+                    {row.solar_expected !== undefined ? row.solar_expected.toFixed(1) : '-'}
+                  </td>
+                  <td style={{ textAlign: 'right', padding: '12px 16px', fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: 'var(--secondary)' }}>
+                    {row.wind_expected !== undefined ? row.wind_expected.toFixed(1) : '-'}
                   </td>
                   <td style={{ textAlign: 'right', padding: '12px 16px', fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: 'var(--on-surface-var)' }}>
                     {row.p10 ? row.p10.toFixed(1) : '-'}

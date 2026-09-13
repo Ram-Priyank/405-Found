@@ -1,62 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   AlertTriangle, AlertCircle, Info, CheckCircle,
   BatteryCharging, Battery, ArrowRight, Activity, TrendingUp, TrendingDown
 } from 'lucide-react';
-
-const risks = [
-  {
-    id: 1,
-    type: 'OVER-GENERATION RISK',
-    level: 'Critical',
-    time: 'Tomorrow 12:00–14:00',
-    forecast: 126,
-    demand: 82,
-    difference: 44, // surplus
-    diffLabel: 'Potential Surplus',
-    suggestions: ['Charge storage', 'Shift flexible load', 'Export surplus'],
-    details: {
-      problem: 'Expected renewable generation may exceed demand.',
-      why: ['High solar forecast', 'Low midday demand', 'Storage partially available'],
-      probability: '78%',
-      actions: [
-        { label: 'Charge Battery', value: '25 MW' },
-        { label: 'Shift Load', value: '10 MW' },
-        { label: 'Export', value: '9 MW' }
-      ],
-      effects: [
-        { label: 'Curtailment', trend: 'down' },
-        { label: 'Renewable Utilization', trend: 'up' },
-        { label: 'Grid Stress', trend: 'down' }
-      ]
-    }
-  },
-  {
-    id: 2,
-    type: 'UNDER-GENERATION RISK',
-    level: 'High',
-    time: 'Tomorrow 18:00–20:00',
-    forecast: 21,
-    demand: 78,
-    difference: 57, // deficit
-    diffLabel: 'Potential Deficit',
-    suggestions: ['Discharge storage', 'Schedule backup', 'Increase grid support'],
-    details: {
-      problem: 'Expected renewable generation will fall significantly below demand.',
-      why: ['Solar drop-off at dusk', 'Evening demand peak expected', 'Wind forecast dropping'],
-      probability: '65%',
-      actions: [
-        { label: 'Discharge Battery', value: '40 MW' },
-        { label: 'Increase Grid Import', value: '17 MW' }
-      ],
-      effects: [
-        { label: 'Grid Dependency', trend: 'up' },
-        { label: 'Backup Required', trend: 'down' },
-        { label: 'Grid Stress', trend: 'up' }
-      ]
-    }
-  }
-];
 
 function AlertCard({ risk, onExpand, expanded }) {
   const isCritical = risk.level === 'Critical';
@@ -162,6 +108,128 @@ function AlertCard({ risk, onExpand, expanded }) {
 
 export default function RiskAlerts() {
   const [expandedId, setExpandedId] = useState(1);
+  const [risks, setRisks] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('http://localhost:8000/api/forecast')
+      .then(r => r.json())
+      .then(data => {
+        const currentIndex = data.findIndex(d => d.actual === null);
+        const futureData = currentIndex >= 0 ? data.slice(currentIndex, currentIndex + 24) : data.slice(-24);
+        const dynamicRisks = [];
+        let currentRisk = null;
+        let riskIdCounter = 1;
+
+        futureData.forEach((d) => {
+          const surplus = d.forecast - d.demand;
+          let type = null;
+          let isCritical = false;
+
+          // Define Risk Thresholds based on Macro Megawatts
+          if (surplus > 150) {
+            type = 'OVER-GENERATION RISK';
+            isCritical = surplus > 250;
+          } else if (surplus < -100) {
+            type = 'UNDER-GENERATION RISK';
+            isCritical = surplus < -200;
+          }
+
+          if (type) {
+            // If the risk type changes or we haven't started a block, finalize the old one and start a new one
+            if (!currentRisk || currentRisk.type !== type) {
+              if (currentRisk) dynamicRisks.push(finalizeRisk(currentRisk, riskIdCounter++));
+              currentRisk = {
+                type,
+                level: isCritical ? 'Critical' : 'High',
+                startTimestamp: d.timestamp,
+                endTimestamp: d.timestamp,
+                forecasts: [d.forecast],
+                demands: [d.demand],
+                differences: [Math.abs(surplus)]
+              };
+            } else {
+              // Extend the current risk block
+              currentRisk.endTimestamp = d.timestamp;
+              currentRisk.forecasts.push(d.forecast);
+              currentRisk.demands.push(d.demand);
+              currentRisk.differences.push(Math.abs(surplus));
+              if (isCritical) currentRisk.level = 'Critical';
+            }
+          } else {
+            // Gap in risk, finalize if there is one
+            if (currentRisk) {
+              dynamicRisks.push(finalizeRisk(currentRisk, riskIdCounter++));
+              currentRisk = null;
+            }
+          }
+        });
+        
+        // Finalize the last risk block if the day ended while in a risk state
+        if (currentRisk) {
+          dynamicRisks.push(finalizeRisk(currentRisk, riskIdCounter++));
+        }
+        
+        setRisks(dynamicRisks);
+        if (dynamicRisks.length > 0) setExpandedId(dynamicRisks[0].id);
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error(err);
+        setLoading(false);
+      });
+  }, []);
+
+  function finalizeRisk(riskObj, id) {
+    const maxDiff = Math.max(...riskObj.differences);
+    const avgForecast = Math.round(riskObj.forecasts.reduce((a,b)=>a+b,0)/riskObj.forecasts.length);
+    const avgDemand = Math.round(riskObj.demands.reduce((a,b)=>a+b,0)/riskObj.demands.length);
+    
+    const startTimeStr = new Date(riskObj.startTimestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    // Add 1 hour to end time to show the full block duration
+    const endDate = new Date(riskObj.endTimestamp);
+    endDate.setHours(endDate.getHours() + 1);
+    const endTimeStr = endDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    const dayStr = new Date(riskObj.startTimestamp).toLocaleDateString([], {weekday: 'short'});
+    const isOver = riskObj.type === 'OVER-GENERATION RISK';
+
+    return {
+      id,
+      type: riskObj.type,
+      level: riskObj.level,
+      time: `${dayStr} ${startTimeStr}–${endTimeStr}`,
+      forecast: avgForecast,
+      demand: avgDemand,
+      difference: Math.round(maxDiff),
+      diffLabel: isOver ? 'Potential Surplus' : 'Potential Deficit',
+      suggestions: isOver ? ['Charge storage', 'Shift flexible load', 'Export surplus'] : ['Discharge storage', 'Schedule backup', 'Increase grid support'],
+      details: {
+        problem: isOver ? 'Expected renewable generation will significantly exceed demand.' : 'Expected renewable generation will fall significantly below demand.',
+        why: isOver ? ['High solar forecast expected', 'Midday demand drop'] : ['Solar drop-off at dusk', 'Low wind generation', 'Evening demand peak'],
+        probability: riskObj.level === 'Critical' ? '85%' : '65%',
+        actions: isOver ? [
+          { label: 'Charge Battery', value: `${Math.round(maxDiff * 0.6)} MW` },
+          { label: 'Export to Grid', value: `${Math.round(maxDiff * 0.4)} MW` }
+        ] : [
+          { label: 'Discharge Battery', value: `${Math.round(maxDiff * 0.5)} MW` },
+          { label: 'Start Backup Gen', value: `${Math.round(maxDiff * 0.5)} MW` }
+        ],
+        effects: isOver ? [
+          { label: 'Curtailment', trend: 'down' },
+          { label: 'Grid Export Revenue', trend: 'up' }
+        ] : [
+          { label: 'Grid Dependency', trend: 'up' },
+          { label: 'Operating Cost', trend: 'up' }
+        ]
+      }
+    };
+  }
+
+  const criticalCount = risks.filter(r => r.level === 'Critical').length;
+  const highCount = risks.filter(r => r.level === 'High').length;
+  const isNormal = criticalCount === 0 && highCount === 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24, animation: 'float-up 0.4s ease-out' }}>
@@ -178,47 +246,59 @@ export default function RiskAlerts() {
 
       {/* ── Risk Summary ────────────────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-        <div className="glass" style={{ padding: 16, borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="glass" style={{ padding: 16, borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12, opacity: criticalCount > 0 ? 1 : 0.5 }}>
           <div style={{ width: 12, height: 12, borderRadius: '50%', background: 'var(--error)' }} />
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--on-surface)' }}>Critical (1)</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--on-surface)' }}>Critical ({criticalCount})</div>
             <div className="telem-sm" style={{ color: 'var(--on-surface-var)' }}>Immediate concern</div>
           </div>
         </div>
-        <div className="glass" style={{ padding: 16, borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="glass" style={{ padding: 16, borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12, opacity: highCount > 0 ? 1 : 0.5 }}>
           <div style={{ width: 12, height: 12, borderRadius: '50%', background: 'var(--tertiary)' }} />
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--on-surface)' }}>High (1)</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--on-surface)' }}>High ({highCount})</div>
             <div className="telem-sm" style={{ color: 'var(--on-surface-var)' }}>Significant imbalance</div>
           </div>
         </div>
-        <div className="glass" style={{ padding: 16, borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="glass" style={{ padding: 16, borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12, opacity: 0.5 }}>
           <div style={{ width: 12, height: 12, borderRadius: '50%', background: 'var(--tertiary-container)' }} />
           <div>
             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--on-surface)' }}>Medium (0)</div>
             <div className="telem-sm" style={{ color: 'var(--on-surface-var)' }}>Requires monitoring</div>
           </div>
         </div>
-        <div className="glass" style={{ padding: 16, borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="glass" style={{ padding: 16, borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12, opacity: isNormal ? 1 : 0.5 }}>
           <div style={{ width: 12, height: 12, borderRadius: '50%', background: 'var(--primary-action)' }} />
           <div>
             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--on-surface)' }}>Normal</div>
-            <div className="telem-sm" style={{ color: 'var(--on-surface-var)' }}>No concerns</div>
+            <div className="telem-sm" style={{ color: 'var(--on-surface-var)' }}>{isNormal ? 'No major risks' : 'System stressed'}</div>
           </div>
         </div>
       </div>
 
       {/* ── Alert List ──────────────────────────────────────── */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {risks.map(risk => (
-          <AlertCard 
-            key={risk.id} 
-            risk={risk} 
-            expanded={expandedId === risk.id}
-            onExpand={id => setExpandedId(id === expandedId ? null : id)} 
-          />
-        ))}
-      </div>
+      {loading ? (
+        <div style={{ padding: 40, textAlign: 'center', color: 'var(--on-surface-var)' }}>
+          Analyzing forecast data for risks...
+        </div>
+      ) : risks.length === 0 ? (
+        <div className="glass" style={{ padding: 40, textAlign: 'center', borderRadius: 8 }}>
+          <CheckCircle size={48} color="var(--primary-action)" style={{ marginBottom: 16, opacity: 0.8 }} />
+          <h2 className="text-headline-sm" style={{ color: 'var(--on-surface)' }}>All Clear</h2>
+          <p style={{ color: 'var(--on-surface-var)', marginTop: 8 }}>No significant over-generation or under-generation risks detected for the next 24 hours.</p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {risks.map(risk => (
+            <AlertCard 
+              key={risk.id} 
+              risk={risk} 
+              expanded={expandedId === risk.id}
+              onExpand={id => setExpandedId(id === expandedId ? null : id)} 
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
